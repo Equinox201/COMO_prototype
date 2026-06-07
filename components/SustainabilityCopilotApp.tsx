@@ -9,9 +9,12 @@ import type {
   ReadinessChecklist,
   StoredActionPlan,
   SustainabilityCaseInput,
+  TelemetryEvent,
+  TelemetryEventName,
 } from "@/lib/types";
 
 const actionPlansStorageKey = "como-sustainability-action-plans";
+const telemetryStorageKey = "como-sustainability-telemetry-events";
 
 const departmentOptions = [
   "Housekeeping",
@@ -84,11 +87,19 @@ type EditorDraft = {
 };
 
 type EditorPanel = "case" | "plan" | "kpi" | "notes";
+type MainView = "actionPlans" | "insights";
 
 type OverviewMetric = {
   label: string;
   value: number;
   helperText: string;
+};
+
+type KnowledgeSource = {
+  title: string;
+  type: string;
+  status: string;
+  use: string;
 };
 
 const readinessChecklistItems: Array<{
@@ -118,6 +129,39 @@ const readinessChecklistItems: Array<{
   {
     field: "staffMessageReady",
     label: "Staff communication message is ready",
+  },
+];
+
+const approvedKnowledgeSources: KnowledgeSource[] = [
+  {
+    title: "COMO Sustainability Operating Principles",
+    type: "Group Policy",
+    status: "Mock connected",
+    use: "Guides sustainability framing and responsible operational recommendations",
+  },
+  {
+    title: "Housekeeping Resource Efficiency SOP",
+    type: "Department SOP",
+    status: "Mock connected",
+    use: "Supports laundry, towel reuse, amenities, and room operations guidance",
+  },
+  {
+    title: "Food Waste Measurement & Buffet Guidelines",
+    type: "F&B SOP",
+    status: "Mock connected",
+    use: "Supports buffet planning, batch replenishment, and food waste tracking",
+  },
+  {
+    title: "Sustainable Procurement Screening Guide",
+    type: "Procurement Guide",
+    status: "Mock connected",
+    use: "Supports supplier review, packaging, sourcing, and lifecycle considerations",
+  },
+  {
+    title: "Sustainability Reporting Reference",
+    type: "Reporting Guidance",
+    status: "Mock connected",
+    use: "Supports KPI definitions, evidence collection, and reporting consistency",
   },
 ];
 
@@ -438,6 +482,60 @@ function normalizeStoredActionPlans(value: unknown): StoredActionPlan[] | null {
   return normalizedPlans;
 }
 
+function isTelemetryEventName(value: unknown): value is TelemetryEventName {
+  return (
+    value === "demo_cases_loaded" ||
+    value === "action_plan_created" ||
+    value === "action_plan_generated" ||
+    value === "action_plan_saved" ||
+    value === "action_plan_approved" ||
+    value === "approval_reset" ||
+    value === "action_plan_marked_done" ||
+    value === "action_plan_deleted" ||
+    value === "action_notes_updated" ||
+    value === "kpi_progress_updated"
+  );
+}
+
+function normalizeTelemetryEvent(value: unknown): TelemetryEvent | null {
+  if (!isRecord(value) || !isTelemetryEventName(value.eventName)) {
+    return null;
+  }
+
+  if (typeof value.id !== "string" || typeof value.timestamp !== "string") {
+    return null;
+  }
+
+  return {
+    id: value.id,
+    eventName: value.eventName,
+    planId: typeof value.planId === "string" ? value.planId : undefined,
+    department:
+      typeof value.department === "string" ? value.department : undefined,
+    timestamp: value.timestamp,
+  };
+}
+
+function normalizeTelemetryEvents(value: unknown): TelemetryEvent[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  const normalizedEvents: TelemetryEvent[] = [];
+
+  for (const event of value) {
+    const normalizedEvent = normalizeTelemetryEvent(event);
+
+    if (!normalizedEvent) {
+      return null;
+    }
+
+    normalizedEvents.push(normalizedEvent);
+  }
+
+  return normalizedEvents;
+}
+
 function copyActionPlan(plan: StoredActionPlan): StoredActionPlan {
   return {
     ...plan,
@@ -519,6 +617,89 @@ function getOperationalOverviewMetrics(plans: StoredActionPlan[]) {
   };
 }
 
+function countTelemetryEvents(
+  telemetryEvents: TelemetryEvent[],
+  eventName: TelemetryEventName,
+) {
+  return telemetryEvents.filter((event) => event.eventName === eventName).length;
+}
+
+function getMostActiveDepartments(
+  plans: StoredActionPlan[],
+  telemetryEvents: TelemetryEvent[],
+) {
+  const departmentCounts = new Map<string, number>();
+
+  for (const event of telemetryEvents) {
+    const department = event.department?.trim();
+
+    if (department) {
+      departmentCounts.set(department, (departmentCounts.get(department) ?? 0) + 1);
+    }
+  }
+
+  if (departmentCounts.size > 0) {
+    return Array.from(departmentCounts.entries())
+      .sort((first, second) => second[1] - first[1])
+      .slice(0, 3)
+      .map(([department]) => department);
+  }
+
+  return Array.from(
+    new Set(
+      plans
+        .map((plan) => plan.sustainabilityCase.department.trim())
+        .filter(Boolean),
+    ),
+  ).slice(0, 3);
+}
+
+function getAdoptionSignals(
+  plans: StoredActionPlan[],
+  telemetryEvents: TelemetryEvent[],
+) {
+  const active = plans.filter(
+    (plan) => plan.approved && !plan.completed,
+  ).length;
+  const done = plans.filter((plan) => plan.completed).length;
+
+  return {
+    metrics: [
+      {
+        label: "Generated",
+        value: countTelemetryEvents(telemetryEvents, "action_plan_generated"),
+        helperText: "AI outputs created",
+      },
+      {
+        label: "Saved",
+        value: countTelemetryEvents(telemetryEvents, "action_plan_saved"),
+        helperText: "Plans recorded locally",
+      },
+      {
+        label: "Approved",
+        value: countTelemetryEvents(telemetryEvents, "action_plan_approved"),
+        helperText: "Human review completed",
+      },
+      {
+        label: "Active",
+        value: active,
+        helperText: "Currently in progress",
+      },
+      {
+        label: "Done",
+        value: done,
+        helperText: "Completed plans",
+      },
+      {
+        label: "Notes Updated",
+        value: countTelemetryEvents(telemetryEvents, "action_notes_updated"),
+        helperText: "Implementation updates saved",
+      },
+    ] satisfies OverviewMetric[],
+    departments: getMostActiveDepartments(plans, telemetryEvents),
+  };
+}
+
 function StatusBadge({ status }: { status: string }) {
   const className =
     status === "Done"
@@ -536,7 +717,56 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-function AppHeader({ onCreate }: { onCreate: () => void }) {
+function MainNavigation({
+  currentMainView,
+  onViewChange,
+}: {
+  currentMainView: MainView;
+  onViewChange: (view: MainView) => void;
+}) {
+  const baseClassName =
+    "min-h-10 rounded-lg px-4 py-2 text-sm font-semibold transition";
+
+  return (
+    <nav
+      className="inline-flex rounded-lg border border-stone-200 bg-stone-50 p-1"
+      aria-label="Main sections"
+    >
+      <button
+        className={`${baseClassName} ${
+          currentMainView === "actionPlans"
+            ? "bg-white text-stone-950 shadow-sm"
+            : "text-stone-600 hover:bg-white/70 hover:text-stone-950"
+        }`}
+        type="button"
+        onClick={() => onViewChange("actionPlans")}
+      >
+        Action Plans
+      </button>
+      <button
+        className={`${baseClassName} ${
+          currentMainView === "insights"
+            ? "bg-white text-stone-950 shadow-sm"
+            : "text-stone-600 hover:bg-white/70 hover:text-stone-950"
+        }`}
+        type="button"
+        onClick={() => onViewChange("insights")}
+      >
+        Insights & Knowledge
+      </button>
+    </nav>
+  );
+}
+
+function AppHeader({
+  currentMainView,
+  onViewChange,
+  onCreate,
+}: {
+  currentMainView: MainView;
+  onViewChange: (view: MainView) => void;
+  onCreate: () => void;
+}) {
   return (
     <header className="rounded-lg border border-stone-200 bg-white px-6 py-7 shadow-sm sm:px-8">
       <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
@@ -552,13 +782,21 @@ function AppHeader({ onCreate }: { onCreate: () => void }) {
             across hotel operations.
           </p>
         </div>
-        <button
-          className="min-h-12 rounded-lg bg-stone-950 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-stone-800"
-          type="button"
-          onClick={onCreate}
-        >
-          Create New Action Plan
-        </button>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center lg:flex-col lg:items-end">
+          <MainNavigation
+            currentMainView={currentMainView}
+            onViewChange={onViewChange}
+          />
+          {currentMainView === "actionPlans" ? (
+            <button
+              className="min-h-12 rounded-lg bg-stone-950 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-stone-800"
+              type="button"
+              onClick={onCreate}
+            >
+              Create New Action Plan
+            </button>
+          ) : null}
+        </div>
       </div>
     </header>
   );
@@ -609,6 +847,114 @@ function OperationalOverview({ plans }: { plans: StoredActionPlan[] }) {
           ))}
         </div>
       )}
+    </section>
+  );
+}
+
+function AdoptionSignals({
+  plans,
+  telemetryEvents,
+}: {
+  plans: StoredActionPlan[];
+  telemetryEvents: TelemetryEvent[];
+}) {
+  const { metrics, departments } = getAdoptionSignals(plans, telemetryEvents);
+
+  return (
+    <section className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm sm:p-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-800">
+            Adoption Signals
+          </p>
+          <h2 className="mt-2 text-2xl font-semibold tracking-normal text-stone-950">
+            Workflow Usage
+          </h2>
+          <p className="mt-2 text-sm leading-6 text-stone-600">
+            Local prototype telemetry showing how teams are using the workflow.
+          </p>
+        </div>
+        {departments.length > 0 ? (
+          <p className="max-w-2xl text-sm leading-6 text-stone-600">
+            Most active departments: {departments.join(", ")}
+          </p>
+        ) : null}
+      </div>
+
+      <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+        {metrics.map((metric) => (
+          <article
+            key={metric.label}
+            className="rounded-lg border border-stone-200 bg-[#fbfaf7] p-4"
+          >
+            <p className="text-xs font-semibold uppercase tracking-[0.13em] text-stone-500">
+              {metric.label}
+            </p>
+            <p className="mt-3 text-3xl font-semibold text-stone-950">
+              {metric.value}
+            </p>
+            <p className="mt-2 text-sm leading-5 text-stone-600">
+              {metric.helperText}
+            </p>
+          </article>
+        ))}
+      </div>
+
+      <p className="mt-5 rounded-lg border border-stone-200 bg-stone-50 px-4 py-3 text-sm leading-6 text-stone-600">
+        Telemetry is stored locally in this browser for demo purposes. In
+        production, this would feed a secure analytics and audit pipeline.
+      </p>
+    </section>
+  );
+}
+
+function ApprovedKnowledgeSources() {
+  return (
+    <section className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm sm:p-6">
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-800">
+          Approved Knowledge Sources
+        </p>
+        <h2 className="mt-2 text-2xl font-semibold tracking-normal text-stone-950">
+          Future Grounding Layer
+        </h2>
+        <p className="mt-2 max-w-4xl text-sm leading-6 text-stone-600">
+          In production, AI recommendations would be grounded in approved COMO
+          policies, SOPs, and reporting guidance.
+        </p>
+      </div>
+
+      <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+        {approvedKnowledgeSources.map((source) => (
+          <article
+            key={source.title}
+            className="rounded-lg border border-stone-200 bg-[#fbfaf7] p-4"
+          >
+            <div className="flex flex-wrap gap-2">
+              <span className="rounded-md border border-stone-200 bg-white px-2 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-stone-600">
+                {source.type}
+              </span>
+              <span className="rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-emerald-900">
+                {source.status}
+              </span>
+            </div>
+            <h3 className="mt-4 text-base font-semibold leading-6 text-stone-950">
+              {source.title}
+            </h3>
+            <p className="mt-3 text-sm leading-6 text-stone-600">
+              {source.use}
+            </p>
+            <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-amber-950">
+              Mock source — not used for live generation yet
+            </p>
+          </article>
+        ))}
+      </div>
+
+      <p className="mt-5 rounded-lg border border-stone-200 bg-stone-50 px-4 py-3 text-sm leading-6 text-stone-600">
+        Future version: connect approved policies, SOPs, and reporting guidance
+        through RAG so generated action plans can cite trusted internal sources.
+      </p>
     </section>
   );
 }
@@ -833,6 +1179,42 @@ function ActionPlanList({
           );
         })}
       </div>
+    </section>
+  );
+}
+
+function InsightsKnowledgeView({
+  plans,
+  telemetryEvents,
+}: {
+  plans: StoredActionPlan[];
+  telemetryEvents: TelemetryEvent[];
+}) {
+  const hasNoSignals = plans.length === 0 && telemetryEvents.length === 0;
+
+  return (
+    <section className="space-y-4">
+      <div className="rounded-lg border border-stone-200 bg-white p-6 shadow-sm sm:p-7">
+        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-800">
+          Local Intelligence
+        </p>
+        <h2 className="mt-2 text-3xl font-semibold tracking-normal text-stone-950">
+          Insights & Knowledge
+        </h2>
+        <p className="mt-3 max-w-4xl text-sm leading-6 text-stone-600 sm:text-base">
+          Monitor local adoption signals and preview how approved sustainability
+          knowledge sources could support future RAG-grounded recommendations.
+        </p>
+      </div>
+
+      {hasNoSignals ? (
+        <div className="rounded-lg border border-dashed border-stone-300 bg-white px-5 py-5 text-sm leading-6 text-stone-600 shadow-sm">
+          Load demo cases or create action plans to see adoption signals.
+        </div>
+      ) : null}
+
+      <AdoptionSignals plans={plans} telemetryEvents={telemetryEvents} />
+      <ApprovedKnowledgeSources />
     </section>
   );
 }
@@ -1698,13 +2080,18 @@ function ActionPlanEditor({
 
 export default function SustainabilityCopilotApp() {
   const [plans, setPlans] = useState<StoredActionPlan[]>([]);
+  const [telemetryEvents, setTelemetryEvents] = useState<TelemetryEvent[]>([]);
   const [hasHydratedPlans, setHasHydratedPlans] = useState(false);
+  const [hasHydratedTelemetry, setHasHydratedTelemetry] = useState(false);
+  const [currentMainView, setCurrentMainView] =
+    useState<MainView>("actionPlans");
   const [editorDraft, setEditorDraft] = useState<EditorDraft | null>(null);
   const [activePanel, setActivePanel] = useState<EditorPanel>("case");
   const [isGenerating, setIsGenerating] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const skipNextPlansPersistRef = useRef(false);
+  const skipNextTelemetryPersistRef = useRef(false);
 
   useEffect(() => {
     let isActive = true;
@@ -1755,7 +2142,83 @@ export default function SustainabilityCopilotApp() {
     }
   }, [hasHydratedPlans, plans]);
 
+  useEffect(() => {
+    let isActive = true;
+    let nextTelemetryEvents: TelemetryEvent[] | null = null;
+
+    try {
+      const storedTelemetry = localStorage.getItem(telemetryStorageKey);
+
+      if (storedTelemetry) {
+        const parsedTelemetry: unknown = JSON.parse(storedTelemetry);
+        nextTelemetryEvents = normalizeTelemetryEvents(parsedTelemetry);
+      }
+    } catch {
+      // Invalid browser telemetry should not block the prototype workflow.
+    }
+
+    queueMicrotask(() => {
+      if (!isActive) {
+        return;
+      }
+
+      if (nextTelemetryEvents) {
+        setTelemetryEvents(nextTelemetryEvents);
+      }
+
+      setHasHydratedTelemetry(true);
+    });
+
+    return () => {
+      isActive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hasHydratedTelemetry) {
+      return;
+    }
+
+    if (skipNextTelemetryPersistRef.current) {
+      skipNextTelemetryPersistRef.current = false;
+      return;
+    }
+
+    try {
+      localStorage.setItem(
+        telemetryStorageKey,
+        JSON.stringify(telemetryEvents),
+      );
+    } catch {
+      // Local telemetry can fail in private browsing or quota-limited contexts.
+    }
+  }, [hasHydratedTelemetry, telemetryEvents]);
+
+  function recordTelemetry({
+    eventName,
+    planId,
+    department,
+  }: {
+    eventName: TelemetryEventName;
+    planId?: string;
+    department?: string;
+  }) {
+    const event: TelemetryEvent = {
+      id: createId(),
+      eventName,
+      planId,
+      department,
+      timestamp: new Date().toISOString(),
+    };
+
+    setTelemetryEvents((currentEvents) => [event, ...currentEvents]);
+  }
+
   function openNewEditor() {
+    recordTelemetry({
+      eventName: "action_plan_created",
+      department: defaultSustainabilityCase.department,
+    });
     setEditorDraft({
       id: null,
       sustainabilityCase: defaultSustainabilityCase,
@@ -1808,6 +2271,16 @@ export default function SustainabilityCopilotApp() {
 
   function deletePlan(planId: string) {
     if (window.confirm("Delete this sustainability action plan?")) {
+      const plan = plans.find((currentPlan) => currentPlan.id === planId);
+
+      if (plan) {
+        recordTelemetry({
+          eventName: "action_plan_deleted",
+          planId,
+          department: plan.sustainabilityCase.department,
+        });
+      }
+
       setPlans((currentPlans) =>
         currentPlans.filter((plan) => plan.id !== planId),
       );
@@ -1824,8 +2297,11 @@ export default function SustainabilityCopilotApp() {
     }
 
     skipNextPlansPersistRef.current = true;
+    skipNextTelemetryPersistRef.current = true;
     localStorage.removeItem(actionPlansStorageKey);
+    localStorage.removeItem(telemetryStorageKey);
     setPlans([]);
+    setTelemetryEvents([]);
   }
 
   function loadDemoCases() {
@@ -1849,10 +2325,14 @@ export default function SustainabilityCopilotApp() {
     }
 
     setPlans((currentPlans) => [...demoPlansToAdd, ...currentPlans]);
+    recordTelemetry({
+      eventName: "demo_cases_loaded",
+    });
   }
 
   function markPlanApproved(planId: string) {
     const now = new Date().toISOString();
+    const plan = plans.find((currentPlan) => currentPlan.id === planId);
 
     setPlans((currentPlans) =>
       currentPlans.map((plan) =>
@@ -1872,12 +2352,16 @@ export default function SustainabilityCopilotApp() {
       ),
     );
 
-    const plan = plans.find((currentPlan) => currentPlan.id === planId);
-
     if (plan && !isReadyForApproval(plan)) {
       window.alert(
         "Complete the readiness checklist and accountability fields before approval.",
       );
+    } else if (plan) {
+      recordTelemetry({
+        eventName: "action_plan_approved",
+        planId,
+        department: plan.sustainabilityCase.department,
+      });
     }
   }
 
@@ -1911,6 +2395,11 @@ export default function SustainabilityCopilotApp() {
           : plan,
       ),
     );
+    recordTelemetry({
+      eventName: "action_plan_marked_done",
+      planId,
+      department: plan.sustainabilityCase.department,
+    });
   }
 
   function updateDraft(nextDraft: EditorDraft) {
@@ -1989,6 +2478,11 @@ export default function SustainabilityCopilotApp() {
         };
       });
       setActivePanel("plan");
+      recordTelemetry({
+        eventName: "action_plan_generated",
+        planId: editorDraft.id ?? undefined,
+        department: sustainabilityCase.department,
+      });
     } catch {
       setErrorMessage(
         "The request failed. Check your connection and try generating the action plan again.",
@@ -2060,6 +2554,32 @@ export default function SustainabilityCopilotApp() {
         owner,
         governanceReview,
       });
+      recordTelemetry({
+        eventName: "action_plan_saved",
+        planId: editorDraft.id,
+        department: sustainabilityCase.department,
+      });
+
+      if (editorDraft.actionNotes.trim().length > 0) {
+        recordTelemetry({
+          eventName: "action_notes_updated",
+          planId: editorDraft.id,
+          department: sustainabilityCase.department,
+        });
+      }
+
+      if (
+        editorDraft.kpiProgress.baseline.trim().length > 0 ||
+        editorDraft.kpiProgress.current.trim().length > 0 ||
+        editorDraft.kpiProgress.target.trim().length > 0 ||
+        editorDraft.kpiProgress.latestUpdate.trim().length > 0
+      ) {
+        recordTelemetry({
+          eventName: "kpi_progress_updated",
+          planId: editorDraft.id,
+          department: sustainabilityCase.department,
+        });
+      }
     } else {
       const id = createId();
       const newPlan: StoredActionPlan = {
@@ -2090,6 +2610,32 @@ export default function SustainabilityCopilotApp() {
         governanceReview,
         createdAt: now,
       });
+      recordTelemetry({
+        eventName: "action_plan_saved",
+        planId: id,
+        department: sustainabilityCase.department,
+      });
+
+      if (editorDraft.actionNotes.trim().length > 0) {
+        recordTelemetry({
+          eventName: "action_notes_updated",
+          planId: id,
+          department: sustainabilityCase.department,
+        });
+      }
+
+      if (
+        editorDraft.kpiProgress.baseline.trim().length > 0 ||
+        editorDraft.kpiProgress.current.trim().length > 0 ||
+        editorDraft.kpiProgress.target.trim().length > 0 ||
+        editorDraft.kpiProgress.latestUpdate.trim().length > 0
+      ) {
+        recordTelemetry({
+          eventName: "kpi_progress_updated",
+          planId: id,
+          department: sustainabilityCase.department,
+        });
+      }
     }
 
     setErrorMessage(null);
@@ -2123,6 +2669,11 @@ export default function SustainabilityCopilotApp() {
     setActivePanel("notes");
     setErrorMessage(null);
     setSuccessMessage(null);
+    recordTelemetry({
+      eventName: "action_plan_approved",
+      planId: editorDraft.id ?? undefined,
+      department: editorDraft.sustainabilityCase.department,
+    });
   }
 
   function markDraftDone() {
@@ -2146,6 +2697,11 @@ export default function SustainabilityCopilotApp() {
     });
     setErrorMessage(null);
     setSuccessMessage(null);
+    recordTelemetry({
+      eventName: "action_plan_marked_done",
+      planId: editorDraft.id ?? undefined,
+      department: editorDraft.sustainabilityCase.department,
+    });
   }
 
   function resetDraftApproval() {
@@ -2166,6 +2722,11 @@ export default function SustainabilityCopilotApp() {
     setActivePanel("case");
     setErrorMessage(null);
     setSuccessMessage("Approval reset. Changes require a new approval before implementation.");
+    recordTelemetry({
+      eventName: "approval_reset",
+      planId: editorDraft.id ?? undefined,
+      department: editorDraft.sustainabilityCase.department,
+    });
   }
 
   return (
@@ -2189,17 +2750,28 @@ export default function SustainabilityCopilotApp() {
           />
         ) : (
           <>
-            <AppHeader onCreate={openNewEditor} />
-            <ActionPlanList
-              plans={plans}
+            <AppHeader
+              currentMainView={currentMainView}
+              onViewChange={setCurrentMainView}
               onCreate={openNewEditor}
-              onLoadDemoCases={loadDemoCases}
-              onEdit={openExistingEditor}
-              onDelete={deletePlan}
-              onApprove={markPlanApproved}
-              onComplete={markPlanDone}
-              onClearLocalData={clearLocalDemoData}
             />
+            {currentMainView === "actionPlans" ? (
+              <ActionPlanList
+                plans={plans}
+                onCreate={openNewEditor}
+                onLoadDemoCases={loadDemoCases}
+                onEdit={openExistingEditor}
+                onDelete={deletePlan}
+                onApprove={markPlanApproved}
+                onComplete={markPlanDone}
+                onClearLocalData={clearLocalDemoData}
+              />
+            ) : (
+              <InsightsKnowledgeView
+                plans={plans}
+                telemetryEvents={telemetryEvents}
+              />
+            )}
           </>
         )}
       </div>

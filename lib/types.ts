@@ -44,6 +44,26 @@ export type KPIProgress = {
   latestUpdate: string;
 };
 
+export type TelemetryEventName =
+  | "demo_cases_loaded"
+  | "action_plan_created"
+  | "action_plan_generated"
+  | "action_plan_saved"
+  | "action_plan_approved"
+  | "approval_reset"
+  | "action_plan_marked_done"
+  | "action_plan_deleted"
+  | "action_notes_updated"
+  | "kpi_progress_updated";
+
+export type TelemetryEvent = {
+  id: string;
+  eventName: TelemetryEventName;
+  planId?: string;
+  department?: string;
+  timestamp: string;
+};
+
 export type StoredActionPlan = {
   id: string;
   title: string;
